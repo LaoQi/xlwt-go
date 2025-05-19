@@ -36,7 +36,7 @@ func NewXlsDoc() *XlsDoc {
 	}
 }
 
-func (self *XlsDoc) BuildDirectory() {
+func (xls *XlsDoc) BuildDirectory() {
 	var buf bytes.Buffer
 	name := utf16.Encode([]rune("Root Entry\x00"))
 	var nameBuf bytes.Buffer
@@ -81,8 +81,8 @@ func (self *XlsDoc) BuildDirectory() {
 	for i := 0; i < 9; i++ {
 		_ = binary.Write(&buf, binary.LittleEndian, SP_L(0))
 	}
-	_ = binary.Write(&buf, binary.LittleEndian, SP_l(0))                    // dentry_start_sid = 0
-	_ = binary.Write(&buf, binary.LittleEndian, SP_L(self.book_stream_len)) // dentry_stream_sz = 0
+	_ = binary.Write(&buf, binary.LittleEndian, SP_l(0))                   // dentry_start_sid = 0
+	_ = binary.Write(&buf, binary.LittleEndian, SP_L(xls.book_stream_len)) // dentry_stream_sz = 0
 	_ = binary.Write(&buf, binary.LittleEndian, SP_L(0))
 
 	// padding
@@ -119,12 +119,12 @@ func (self *XlsDoc) BuildDirectory() {
 	_ = binary.Write(&buf, binary.LittleEndian, SP_L(0))  // dentry_stream_sz = 0
 	_ = binary.Write(&buf, binary.LittleEndian, SP_L(0))
 
-	self.dir_stream = buf.Bytes()
+	xls.dir_stream = buf.Bytes()
 }
 
-func (self *XlsDoc) BuildSat() {
-	book_sect_count := self.book_stream_len >> 9
-	dir_sect_count := len(self.dir_stream) >> 9
+func (xls *XlsDoc) BuildSat() {
+	book_sect_count := xls.book_stream_len >> 9
+	dir_sect_count := len(xls.dir_stream) >> 9
 
 	total_sect_count := book_sect_count + dir_sect_count
 	SAT_sect_count := 0
@@ -145,33 +145,33 @@ func (self *XlsDoc) BuildSat() {
 
 	sect := 0
 	for sect < book_sect_count-1 {
-		self.book_stream_sect = append(self.dir_stream_sect, sect)
+		xls.book_stream_sect = append(xls.dir_stream_sect, sect)
 		SAT[sect] = sect + 1
 		sect += 1
 	}
 
-	self.book_stream_sect = append(self.book_stream_sect, sect)
+	xls.book_stream_sect = append(xls.book_stream_sect, sect)
 	SAT[sect] = SID_END_OF_CHAIN
 	sect += 1
 
 	for sect < book_sect_count+MSAT_sect_count {
-		self.MSAT_sect_2nd = append(self.MSAT_sect_2nd, sect)
+		xls.MSAT_sect_2nd = append(xls.MSAT_sect_2nd, sect)
 		SAT[sect] = SID_USED_BY_MSAT
 		sect += 1
 	}
 
 	for sect < book_sect_count+MSAT_sect_count+SAT_sect_count {
-		self.SAT_sect = append(self.SAT_sect, sect)
+		xls.SAT_sect = append(xls.SAT_sect, sect)
 		SAT[sect] = SID_USED_BY_SAT
 		sect += 1
 	}
 
 	for sect < book_sect_count+MSAT_sect_count+SAT_sect_count+dir_sect_count-1 {
-		self.dir_stream_sect = append(self.dir_stream_sect, sect)
+		xls.dir_stream_sect = append(xls.dir_stream_sect, sect)
 		SAT[sect] = sect + 1
 		sect += 1
 	}
-	self.dir_stream_sect = append(self.dir_stream_sect, sect)
+	xls.dir_stream_sect = append(xls.dir_stream_sect, sect)
 	SAT[sect] = SID_END_OF_CHAIN
 	sect += 1
 
@@ -179,18 +179,18 @@ func (self *XlsDoc) BuildSat() {
 	for i := 0; i < len(SAT); i++ {
 		_ = binary.Write(&packedSATBuffer, binary.LittleEndian, SP_l(SAT[i]))
 	}
-	self.packed_SAT = packedSATBuffer.Bytes()
+	xls.packed_SAT = packedSATBuffer.Bytes()
 
 	MSAT_1st := FillInt(109, SID_FREE_SECTOR)
-	for i := 0; i < 109 && i < len(self.SAT_sect); i++ {
-		MSAT_1st[i] = self.SAT_sect[i]
+	for i := 0; i < 109 && i < len(xls.SAT_sect); i++ {
+		MSAT_1st[i] = xls.SAT_sect[i]
 	}
 
 	var packedMSAT1stBuffer bytes.Buffer
 	for i := 0; i < len(MSAT_1st); i++ {
 		_ = binary.Write(&packedMSAT1stBuffer, binary.LittleEndian, SP_l(MSAT_1st[i]))
 	}
-	self.packed_MSAT_1st = packedMSAT1stBuffer.Bytes()
+	xls.packed_MSAT_1st = packedMSAT1stBuffer.Bytes()
 
 	MSAT_2nd := FillInt(128*MSAT_sect_count, SID_FREE_SECTOR)
 	if MSAT_sect_count > 0 {
@@ -202,11 +202,11 @@ func (self *XlsDoc) BuildSat() {
 	for i := 109; i < SAT_sect_count; {
 		if (sid_num+1)%128 == 0 {
 			msat_sect += 1
-			if msat_sect < len(self.MSAT_sect_2nd) {
-				MSAT_2nd[sid_num] = self.MSAT_sect_2nd[msat_sect]
+			if msat_sect < len(xls.MSAT_sect_2nd) {
+				MSAT_2nd[sid_num] = xls.MSAT_sect_2nd[msat_sect]
 			}
 		} else {
-			MSAT_2nd[sid_num] = self.SAT_sect[i]
+			MSAT_2nd[sid_num] = xls.SAT_sect[i]
 		}
 		sid_num += 1
 	}
@@ -214,10 +214,10 @@ func (self *XlsDoc) BuildSat() {
 	for i := 0; i < len(MSAT_2nd); i++ {
 		_ = binary.Write(&packedMSAT2ndBuffer, binary.LittleEndian, SP_l(MSAT_2nd[i]))
 	}
-	self.packed_MSAT_2nd = packedMSAT2ndBuffer.Bytes()
+	xls.packed_MSAT_2nd = packedMSAT2ndBuffer.Bytes()
 }
 
-func (self *XlsDoc) WriteHeader() {
+func (xls *XlsDoc) WriteHeader() {
 	// 主文件头
 	header := []byte{
 		0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, // 文件头魔数
@@ -232,40 +232,40 @@ func (self *XlsDoc) WriteHeader() {
 		0x00, 0x00, // 保留字段
 	}
 
-	self.buf.Write(header)
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_L(len(self.SAT_sect)))
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_l(self.dir_stream_sect[0])) //  dir_start_sid = struct.pack('<l', self.dir_stream_sect[0])
-	self.buf.Write([]byte{0x00, 0x00, 0x00, 0x00})
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_L(0x1000))
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_l(-2))
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_L(0))
+	xls.buf.Write(header)
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_L(len(xls.SAT_sect)))
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_l(xls.dir_stream_sect[0])) //  dir_start_sid = struct.pack('<l', xls.dir_stream_sect[0])
+	xls.buf.Write([]byte{0x00, 0x00, 0x00, 0x00})
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_L(0x1000))
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_l(-2))
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_L(0))
 
-	if len(self.MSAT_sect_2nd) == 0 {
-		_ = binary.Write(&self.buf, binary.LittleEndian, SP_l(-2))
+	if len(xls.MSAT_sect_2nd) == 0 {
+		_ = binary.Write(&xls.buf, binary.LittleEndian, SP_l(-2))
 	} else {
-		_ = binary.Write(&self.buf, binary.LittleEndian, SP_l(self.MSAT_sect_2nd[0]))
+		_ = binary.Write(&xls.buf, binary.LittleEndian, SP_l(xls.MSAT_sect_2nd[0]))
 	}
-	_ = binary.Write(&self.buf, binary.LittleEndian, SP_L(len(self.MSAT_sect_2nd)))
+	_ = binary.Write(&xls.buf, binary.LittleEndian, SP_L(len(xls.MSAT_sect_2nd)))
 }
 
-func (self *XlsDoc) Save(writer io.Writer, stream []byte) error {
+func (xls *XlsDoc) Save(writer io.Writer, stream []byte) error {
 	paddingLength := 0x1000 - (len(stream) % 0x1000)
 	padding := make([]byte, paddingLength)
 
-	self.book_stream_len = len(stream) + paddingLength
+	xls.book_stream_len = len(stream) + paddingLength
 
-	self.BuildDirectory()
-	self.BuildSat()
+	xls.BuildDirectory()
+	xls.BuildSat()
 
-	self.WriteHeader()
-	self.buf.Write(self.packed_MSAT_1st)
-	self.buf.Write(stream)
-	self.buf.Write(padding)
-	self.buf.Write(self.packed_MSAT_2nd)
-	self.buf.Write(self.packed_SAT)
-	self.buf.Write(self.dir_stream)
+	xls.WriteHeader()
+	xls.buf.Write(xls.packed_MSAT_1st)
+	xls.buf.Write(stream)
+	xls.buf.Write(padding)
+	xls.buf.Write(xls.packed_MSAT_2nd)
+	xls.buf.Write(xls.packed_SAT)
+	xls.buf.Write(xls.dir_stream)
 
-	data := self.buf.Bytes()
+	data := xls.buf.Bytes()
 	log.Println("save data:", len(data))
 	_, err := writer.Write(data)
 	return err
