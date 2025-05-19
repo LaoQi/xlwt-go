@@ -3,20 +3,7 @@ package xlwt
 import (
 	"bytes"
 	"encoding/binary"
-	"unicode/utf16"
 )
-
-func U16StringPack(s string) []byte {
-	var buf bytes.Buffer
-	// always use Unicode 16
-	u16s := utf16.Encode([]rune(s))
-	_ = binary.Write(&buf, binary.LittleEndian, SP_H(len(u16s)))
-	_ = binary.Write(&buf, binary.LittleEndian, uint8(1))
-	for _, u := range u16s {
-		_ = binary.Write(&buf, binary.LittleEndian, u)
-	}
-	return buf.Bytes()
-}
 
 type SharedStringTable struct {
 	StrIndexes map[string]int
