@@ -33,6 +33,7 @@ var StdNumFormatString = []string{
 }
 
 const FIRST_USER_DEFINED_NUM_FORMAT_IDX = 164
+const DefaultCellXFStyle = 0x11
 
 type XFStyle struct {
 
@@ -51,12 +52,14 @@ func (xf *XFStyle) GetBiffData() []byte {
 		buf.Write(DefaultFontRecord())
 	}
 
+	buf.Write(DefaultFontRecord())
 	buf.Write(NumberFormatRecord(FIRST_USER_DEFINED_NUM_FORMAT_IDX, "General"))
 
 	for i := 0; i < 16; i++ {
 		buf.Write(DefaultXFRecord())
 	}
 	buf.Write(DefaultCellXFRecord())
+	buf.Write(CellXFRecord(7))
 	buf.Write(StyleRecord())
 	return buf.Bytes()
 }

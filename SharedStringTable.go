@@ -12,7 +12,9 @@ type SharedStringTable struct {
 }
 
 func NewSharedStringTable() *SharedStringTable {
-	return &SharedStringTable{}
+	return &SharedStringTable{
+		StrIndexes: make(map[string]int),
+	}
 }
 
 func (sst *SharedStringTable) AddStr(value string) int {
@@ -37,7 +39,7 @@ func (sst *SharedStringTable) GetSSTRecord() []byte {
 
 func (sst *SharedStringTable) GetBiffRecord() []byte {
 	var buf bytes.Buffer
-	_ = binary.Write(&buf, binary.LittleEndian, SP_H(0x00fc)) // SST
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(0x00FC)) // SST
 	body := sst.GetSSTRecord()
 	_ = binary.Write(&buf, binary.LittleEndian, SP_H(len(body)+8))
 	_ = binary.Write(&buf, binary.LittleEndian, SP_I(sst.Total))
