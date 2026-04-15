@@ -1,35 +1,50 @@
 # xlwt-go
-Simple Go Implementation of Python xlwt Library
 
-### Notice
-* Only support string cell
-* Not support style
-* Not support formula
-* May no longer be maintained
+A Go library for writing Microsoft Excel (.xls) files. Ported from the Python [xlwt](https://github.com/python-excel/xlwt) library.
 
-### Use
+## Install
 
 ```bash
-$ git clone https://github.com/LaoQi/xlwt-go.git
+go get github.com/LaoQi/xlwt-go
 ```
 
-```
-// go.mod
-replace xlwt => github.com/LaoQi/xlwt-go master 
-// or
-replace xlwt => ./xlwt-go
-```
+## Usage
 
 ```go
-wb := xlwt.NewWorkbook()
-ws := wb.AddSheet("Sheet1")
+package main
 
-ws.Write(0, 0, "xls is bullshit!!!")
+import (
+	"log"
+	"os"
 
-fp, err := os.Create("test-go.xls")
-if err != nil {
-    log.Fatal(err)
+	xlwt "github.com/LaoQi/xlwt-go"
+)
+
+func main() {
+	wb := xlwt.NewWorkbook()
+	ws := wb.AddSheet("Sheet1")
+
+	ws.Write(0, 0, "Hello, XLS!")
+
+	fp, err := os.Create("output.xls")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer fp.Close()
+
+	if err := wb.Save(fp); err != nil {
+		log.Fatal(err)
+	}
 }
-defer fp.Close()
-err = wb.Save(fp)
 ```
+
+## Limitations
+
+- Only supports string cells
+- No style customization
+- No formula support
+- No number/date cell types
+
+## License
+
+LGPL-2.1
