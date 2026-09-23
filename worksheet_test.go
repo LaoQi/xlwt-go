@@ -2,6 +2,7 @@ package xlwt
 
 import (
 	"encoding/binary"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -190,6 +191,69 @@ func TestWorksheet_WriteValidation(t *testing.T) {
 				t.Errorf("worksheet was modified despite the error: Grid=%v RowsIndex=%v", ws.Grid, ws.RowsIndex)
 			}
 		})
+	}
+}
+
+// TestWorksheet_SerialisationScalesLinearly guards against the quadratic writer
+// that scanned the whole grid once per row. The check is on output identity
+// rather than on time: every row must keep its own cells, in column order, no
+// matter how the grid is laid out.
+func TestWorksheet_SerialisationScalesLinearly(t *testing.T) {
+	wb := NewWorkbook()
+	ws, err := wb.AddSheet("Wide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A tall, sparse sheet: 3000 rows, one cell each, columns widely spread.
+	values := map[[2]int]string{}
+	for r := 0; r < 3000; r++ {
+		c := (r * 7) % MaxCol
+		value := "row_" + strconv.Itoa(r)
+		values[[2]int{r, c}] = value
+		if err := ws.Write(r, c, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One row with many cells, to keep the column sorting exercised.
+	for c := MaxCol; c >= 0; c-- {
+		value := "top_" + strconv.Itoa(c)
+		values[[2]int{0, c}] = value
+		if err := ws.Write(0, c, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stream := wb.GetBiffData()
+	sheets := boundSheets(t, stream)
+	cells := sheetCells(t, stream, int(sheets[0].Pos))
+	if len(cells) != len(values) {
+		t.Fatalf("parsed %d cells, want %d", len(cells), len(values))
+	}
+	for key, want := range values {
+		if got := cells[key]; got != want {
+			t.Errorf("cell %v = %q, want %q", key, got, want)
+		}
+	}
+
+	// Every row record must be followed by its own cells, in column order.
+	records := parseBiffRecords(t, stream)
+	for i, rec := range records {
+		if rec[0].(uint16) != 0x0208 {
+			continue
+		}
+		row := int(binary.LittleEndian.Uint16(rec[1].([]byte)[0:2]))
+		lastCol := -1
+		for j := i + 1; j < len(records) && records[j][0].(uint16) == labelSSTID; j++ {
+			data := records[j][1].([]byte)
+			if got := int(binary.LittleEndian.Uint16(data[0:2])); got != row {
+				t.Fatalf("row %d record contains a cell of row %d", row, got)
+			}
+			col := int(binary.LittleEndian.Uint16(data[2:4]))
+			if col <= lastCol {
+				t.Fatalf("row %d cells are not ordered: %d after %d", row, col, lastCol)
+			}
+			lastCol = col
+		}
 	}
 }
 

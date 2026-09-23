@@ -54,6 +54,14 @@
 // matching what spreadsheets display. See SetColWidthRaw and SetRowHeight for
 // the raw file units.
 //
+// The bytes of a workbook do not depend on the order in which the cells were
+// written. Shared string indexes follow the first cell that refers to each
+// string, in sheet, row and then column order, so writing the cells in that
+// order (or sorting them before writing) keeps the historical byte-for-byte
+// layout, while any other order produces exactly the same file as well. A
+// caller that fills a sheet from a map therefore no longer gets a different
+// file on every run.
+//
 // This is a write-only library; it cannot read .xls files. Only string cells are
 // supported. See the project README for the current limitations.
 package xlwt

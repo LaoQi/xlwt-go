@@ -119,6 +119,12 @@ func (wb *Workbook) GetBiffData() []byte {
 	before.Write(PaletteRecord())
 	before.Write(UseSelfsRecord())
 
+	// Cells are written sorted and their string references are resolved against
+	// the shared string table, so the table must be sorted before any record
+	// that quotes an index is built. This is the earliest point at which the
+	// whole workbook is known.
+	wb.finalizeSST()
+
 	var after bytes.Buffer
 	//after.Write(CountryRec())  // Skip
 	//after.Write(LinksRec())  // Skip

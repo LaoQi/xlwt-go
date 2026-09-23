@@ -79,6 +79,19 @@ func (ws *Worksheet) wsBoolRec() []byte {
 	return WSBoolRecord(options)
 }
 
+// remapSSTIndexes rewrites every cell of the sheet so that Cell.SSTIdx keeps
+// pointing at its own string after the shared string table was sorted. It is
+// called by Workbook.finalizeSST and is the only place that mutates a stored
+// cell other than Write.
+func (ws *Worksheet) remapSSTIndexes(remap []int) {
+	for key, cell := range ws.Grid {
+		if cell.SSTIdx >= 0 && cell.SSTIdx < len(remap) {
+			cell.SSTIdx = remap[cell.SSTIdx]
+			ws.Grid[key] = cell
+		}
+	}
+}
+
 func (ws *Worksheet) dimensionsRec() []byte {
 	lastUsedRow := 0
 	lastUsedCol := 0
@@ -124,12 +137,14 @@ func (ws *Worksheet) protectionRec() []byte {
 }
 
 func (ws *Worksheet) GetRowCellsBiffData(row int) []byte {
-	var cells []Cell
-	for _, cell := range ws.Grid {
-		if cell.Row == row {
-			cells = append(cells, cell)
-		}
-	}
+	// The whole grid has to be scanned for a single row, so this entry point is
+	// only cheap when the caller already holds the cells of that row (it is kept
+	// for compatibility).
+	return ws.rowCellsBiffData(row, ws.cellsOfRow(row))
+}
+
+// rowCellsBiffData writes one row from cells that are known to belong to it.
+func (ws *Worksheet) rowCellsBiffData(row int, cells []Cell) []byte {
 	if len(cells) == 0 {
 		// A row without cells still needs a ROW record when its properties were
 		// set explicitly (height, hidden, outline level).
@@ -157,12 +172,12 @@ func (ws *Worksheet) GetRowCellsBiffData(row int) []byte {
 }
 
 func (ws *Worksheet) GetRowsBiffData() []byte {
-	var buf bytes.Buffer
-
 	// Rows are emitted when they contain cells or when their sizing was set
 	// explicitly, which is what the Python original does for row().hidden etc.
-	seen := make(map[int]bool, len(ws.RowsIndex)+len(ws.Rows))
-	for index := range ws.RowsIndex {
+	byRow := ws.cellsByRow()
+
+	seen := make(map[int]bool, len(byRow)+len(ws.Rows))
+	for index := range byRow {
 		seen[index] = true
 	}
 	for index := range ws.Rows {
@@ -174,10 +189,35 @@ func (ws *Worksheet) GetRowsBiffData() []byte {
 		rows = append(rows, index)
 	}
 	sort.Ints(rows)
+
+	var buf bytes.Buffer
 	for _, index := range rows {
-		buf.Write(ws.GetRowCellsBiffData(index))
+		buf.Write(ws.rowCellsBiffData(index, byRow[index]))
 	}
 	return buf.Bytes()
+}
+
+// cellsOfRow returns the cells of one row. It is the single-row convenience
+// wrapper around cellsByRow and is as expensive as a full grid scan.
+func (ws *Worksheet) cellsOfRow(row int) []Cell {
+	var cells []Cell
+	for _, cell := range ws.Grid {
+		if cell.Row == row {
+			cells = append(cells, cell)
+		}
+	}
+	return cells
+}
+
+// cellsByRow groups the grid by row. The rows are written row by row, so
+// collecting the cells once keeps serialisation linear in the number of cells;
+// scanning the whole grid for every row would make it quadratic.
+func (ws *Worksheet) cellsByRow() map[int][]Cell {
+	byRow := make(map[int][]Cell, len(ws.RowsIndex))
+	for _, cell := range ws.Grid {
+		byRow[cell.Row] = append(byRow[cell.Row], cell)
+	}
+	return byRow
 }
 
 func (ws *Worksheet) GetBiffData() []byte {

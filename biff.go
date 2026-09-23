@@ -34,17 +34,31 @@ func (r *BiffRecord) GetRecHeader() []byte {
 	return buf.Bytes()
 }
 
+// Get serialises the record. A payload longer than 0x2020 bytes is split into a
+// chain of CONTINUE (0x003C) records, one payload per record.
+//
+// The split is a plain byte split and is only valid for records whose data is a
+// flat byte string. Records with structured payloads need their own rules: a
+// shared string table, for example, must not be cut in the middle of a UTF-16
+// character and has to repeat option flags in every continuation, which is why
+// SharedStringTable.GetBiffRecord builds its own record chain.
 func (r *BiffRecord) Get() []byte {
 	data := r._rec_data
-	// limit for BIFF7/8
+	// limit for BIFF7/8: a record payload is at most 0x2020 bytes, everything
+	// beyond that goes into CONTINUE records.
 	if len(data) > 0x2020 {
 		var chunks [][]byte
 		pos := 0
 		for pos < len(data) {
-			chunk_pos := pos + 0x2020
-			chunk := data[pos:chunk_pos]
-			chunks = append(chunks, chunk)
-			pos = chunk_pos
+			// The last chunk is shorter than the limit; taking a fixed-size
+			// slice here used to panic for any payload whose length was not a
+			// multiple of 0x2020.
+			chunkPos := pos + 0x2020
+			if chunkPos > len(data) {
+				chunkPos = len(data)
+			}
+			chunks = append(chunks, data[pos:chunkPos])
+			pos = chunkPos
 		}
 		var continuesBuff bytes.Buffer
 		_ = binary.Write(&continuesBuff, binary.LittleEndian, r._REC_ID)

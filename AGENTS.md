@@ -8,7 +8,7 @@
 
 - `NewWorkbook() *Workbook`
 - `wb.AddSheet(name string) (*Worksheet, error)`：重名（大小写不敏感）、空名、超 31 字符、含 `\ / ? * [ ] :` 或前导 `'` 均报错
-- `ws.Write(row, col int, label string) error`：仅字符串单元格；行列 0 基；键 `(row<<16)+col` 存 `Worksheet.Grid`，字符串进 `SST` 去重，XF 用 `DefaultCellXFStyle`(0x11)
+- `ws.Write(row, col int, label string) error`：仅字符串单元格；行列 0 基；键 `(row<<16)+col` 存 `Worksheet.Grid`，字符串进 `SST` 去重，XF 用 `DefaultCellXFStyle`(0x11)。**产物字节与 `Write` 调用顺序无关**（2026-09 修复，见 `sheet.go`）
 - `ws.WriteWithStyle(r, c int, label string, style *XFStyle) error`：带样式写入，`nil` = 默认样式；`ws.Write` 就是它的无样式简写
 - `wb.AddStyle(style *XFStyle) (int, error)`：注册样式并返回 XF 索引（`WriteWithStyle` 内部自动调用）
 - 样式（`style.go`）：`XFStyle{NumFormatStr, Font, Alignment, Borders, Pattern, Protection}` + 各组件常量；`NewXFStyle()` 及各组件构造函数给出库默认值
@@ -21,12 +21,13 @@
 - `doc.go`：包级文档（pkg.go.dev 首页说明）
 - `example_test.go`：外部包 `xlwt_test` 的可运行示例（godoc 展示）
 - `workbook.go` / `worksheet.go`：模型与 BIFF 记录组装顺序（改记录顺序看这里）
+- `sheet.go`：`Workbook.finalizeSST()` —— 写盘前按「首个引用该串的单元格位置（sheet→row→col）」给 SST 排序并重映射索引（`Worksheet.remapSSTIndexes` 回写 `Grid` 里的 `Cell.SSTIdx`），保证字节确定性
 - `sst.go`：SharedStringTable，SST + CONTINUE(0x3C) 分块（`MaxSSTLength`=0x2020）；超长字符串按上游语义**拆到后续 CONTINUE**，续块首字节重复选项标志（`MaxSSTCellLength` 已弃用）
 - `style.go`：样式数据类型（`Font`/`Alignment`/`Borders`/`Pattern`/`Protection`/`XFStyle`）、全部相关常量、内置数字格式表（`stdNumFormatStrings`，前 23 项 = 索引 0..22，后 13 项 = 37..49）
 - `style_collection.go`：索引分配 + 去重 + 样式段序列化。**索引布局刻意复刻上游**：字体 0,1,2,3,5,6,7（4 号在所有 BIFF 版本都跳过）、style XF 0x00..0x0F（指向 6 号字体）、cell XF 自 0x10 起 → 默认样式落在 0x11。上游用对象身份去重（每个等价样式的副本一个新 XF），本库**按值去重**（更省，等价样式/字体合并）
 - `record_style.go`：`fontRecord`/`numberFormatRecord`/`xfRecord`/`styleRecord` 参数化实现，位域打包严格对齐上游 `XFRecord`（含"无边框线则颜色写 0"这一细节）
-- **硬约束**：默认路径（不传样式）的输出字节必须与加样式功能之前**完全一致**（`sha256 = 50B78E44…706DE`，由 `TestStyle_DefaultOutputUnchanged` 与字节级对照保障）
-- `biff.go`：`BiffRecord`（记录头；数据 >0x2020 自动拆 CONTINUE）、`SingleHRecord`
+- **硬约束**：默认路径（不传样式）的输出字节必须与加样式功能之前**完全一致**（`sha256 = 50B78E44…706DE`，由 `TestStyle_DefaultOutputUnchanged` 与字节级对照保障）。**该哈希对「按 (表,行,列) 位置序写入」的表仍成立**：SST 排序键取首个引用位置，正是旧「首次出现顺序」，故与修复前的字节一致（乱序写入时才重排）
+- `biff.go`：`BiffRecord`（记录头；数据 >0x2020 拆 CONTINUE，末块按 `min(0x2020, 剩余)` 截断——2026-09 修此前的越界 panic；该通用分片**不适用于 SST**，见 `sst.go`）、`SingleHRecord`
 - `record_workbook.go` / `record_worksheet.go` / `record_style.go`：各 BIFF 记录序列化，记录号硬编码（0x0809 BOF、0x00FD LABELSST、0x0208 Row、0x00E0 XF…）
 - `compound_doc.go`：OLE2 容器（Header、MSAT/SAT、Directory），512 字节扇区；内部中文注释是乱码，勿依赖
 - `types.go`：`SP_L/SP_l/SP_H/SP_h/SP_I/SP_B/SP_d` 对应 `struct.pack` 的定长整型别名；`util.go`：UTF-16LE / ASCII 打包与填充
@@ -46,9 +47,12 @@
 - `Write`/`AddSheet` 已加 error 返回（2026-09，属破坏性 API 变更，但项目此前无 tag）；`Save` 仍不校验工作簿整体大小；库内不打印日志，仅通过返回值暴露错误
 - 样式已支持字体/数字格式/对齐/边框/填充/保护，但**未实现**上游 `easyxf`/`easyfont` 字符串 DSL（阶段 2）与 `add_palette_colour` 自定义调色板（阶段 3）
 - 列宽/行高已支持（2026-09，对齐上游）：**只有显式设置过的列/行才写出 COLINFO/ROW 记录**，未设置时输出字节与加该功能前完全一致（同样受硬约束与 `TestDimensions_UnaffectedByDefault` 保护）
+- `Workbook.Owner` 经 `WriteAccessRecord` 写入：WRITEACCESS 固定 0x70 字节，owner 取前 `maxOwnerLength`=0x30=48 字节（上游 `owner[0:0x30]` 语义），超出部分**截断**但保证 UTF-8 边界；此前超 112 字节会因负 padding panic
 - 上游口径细节（已实证核对，勿凭直觉改）：ROW 记录 bit15「使用默认行高」上游**始终为 0**（即使高度就是默认值）；bit 27-16 为默认 XF 索引 `0x0F`（ROW 与 COLINFO 都用 0x0F）；bit8 恒为 1。GUTS 的行层级在无分行时也报 `1`，列层级取已用 COLINFO 的 `max(level)+1`
+- 表序列化（`GetRowsBiffData`）按行分组一次（`cellsByRow`），每行内按列排序后写 LABELSST；2026-09 前是每行全量扫 `Grid` 的 O(行数×格数)，99612 格实测 4.12s → 0.05s（`TestWorksheet_SerialisationScalesLinearly` 守住行/列归属与列序）
 - 写单元格**不会**隐式创建 COLINFO（上游 `ws.col(i).width=` 才创建）；只设行属性而无单元格的行也会输出 ROW 记录
 - 尚未支持：单元格高亮、合并单元格；行列的分级（outline level）记录已具备但未暴露 API
+- CQTest2 改动需求单（2026-09-23）的全部项已处理完：超长串静默错位、`BiffRecord.Get` 分片越界 panic、逐行全量扫 `Grid` 的 O(n²) 写表、`BuildSat` panic、`dir_stream_sect` 误 append、Grid 键溢出、`Owner` 超长 panic、库内 `log`、无 CI、测试写工作目录、写入顺序影响字节
 - 零值语义有 2 处例外（文件格式把 0 用作有意义的非默认值）：`Alignment.Vert`（0=顶端）与 `Protection.CellUnlocked`（0=锁定，恰为默认）。其余字段零值回落到文档所述默认。**需要库默认值时请用 `NewXFStyle()` 或组件构造函数**
 - 导出面偏大：BIFF/OLE2 记录层（`LabelSSTRecord`、`Window1Record`、`XlsDoc`…）也暴露在 godoc 中，如需收敛可迁到 `internal/`（较大重构，未做）
 
@@ -64,7 +68,7 @@ go test -run TestWorksheet_Write -v .
 ```
 
 - 测试写入 `t.TempDir()`（不再污染包目录）。除结构断言（OLE2 签名、扇区对齐）外，测试内含一个小型 BIFF 解析器（`parseBiffRecords`/`sstPayloads`/`parseSSTStrings`/`sheetCells`），可**内容级**校验：SST 表布局与 CONTINUE 拆分、BOUNDSHEET 偏移指向各自 BOF、各 sheet 单元格归属正确
-- 回归测试与被修复的 bug 一一对应，可放心回退验证：`TestWorkbook_BoundSheet*`（偏移不递增）、`TestSharedStringTable_LongStringsUsedToBeDropped`（长串被丢弃）、`TestXlsDoc_SaveLargeStream`（MSAT 二级扇区 panic）、`TestWorkbook_NonLatinSheetNameUsedToBeMangled`（表名乱码）、`TestWorksheet_WriteValidation` / `TestWorkbook_AddSheetValidation`（参数校验）
+- 回归测试与被修复的 bug 一一对应，可放心回退验证：`TestWorkbook_BoundSheet*`（偏移不递增）、`TestSharedStringTable_LongStringsUsedToBeDropped`（长串被丢弃）、`TestXlsDoc_SaveLargeStream`（MSAT 二级扇区 panic）、`TestWorkbook_NonLatinSheetNameUsedToBeMangled`（表名乱码）、`TestWorksheet_WriteValidation` / `TestWorkbook_AddSheetValidation`（参数校验）、`TestWorksheet_WriteOrderDoesNotChangeOutput` / `TestWorksheet_SortedWriteOrderUnchanged`（写入顺序影响字节；已修：任意顺序字节一致，位置序时与历史字节一致）、`TestBiffRecord_ChunkSplit`（>8224 字节且非整数倍时越界 panic）、`TestWorksheet_SerialisationScalesLinearly`（逐行全量扫 `Grid`）、`TestWorkbook_OwnerLongNameUsedToPanic` / `TestWorkbook_OwnerTruncatesOnRuneBoundary`（Owner 超长 panic）
 - 外部读取器交叉验证（Python xlrd 2.0.1 实测通过）：多 sheet 内容各归其位、5000 字符/emoji 长串、中文与其他 Unicode、3000 条 SST 跨 CONTINUE、8000 格 33MB 走 MSAT 二级路径的大文件
 - 行尾统一 LF（`.gitattributes` 强制 `eol=lf`），`gofmt -l .` 不再误报；`.editorconfig` 约定 Go 用 tab
 - CI：`.github/workflows/ci.yml`，linux/windows/macos × gofmt+vet+build+test，另加 govulncheck

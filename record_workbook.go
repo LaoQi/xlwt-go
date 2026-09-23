@@ -3,6 +3,7 @@ package xlwt
 import (
 	"bytes"
 	"encoding/binary"
+	"unicode/utf8"
 )
 
 func Biff8BOFRecord(recType SP_H) []byte {
@@ -157,7 +158,23 @@ func EOFRecord() []byte {
 	return NewBiffRecord(0x000A, []byte{}).Get()
 }
 
+// maxOwnerLength is the number of bytes the WRITEACCESS record reserves for the
+// owner name (0x70 bytes in total, the rest is space padding).
+const maxOwnerLength = 0x30
+
+// WriteAccessRecord writes the WRITEACCESS record (0x005C), which holds the name
+// of the user that saved the file as a fixed size, space padded string.
+//
+// Names longer than 0x30 bytes are truncated, which is what the Python original
+// does (it slices the name to 0x30 characters before packing it). Truncation
+// stops at a character boundary so the record never ends in half a rune.
 func WriteAccessRecord(owner []byte) []byte {
+	if len(owner) > maxOwnerLength {
+		owner = owner[:maxOwnerLength]
+		for len(owner) > 0 && !utf8.Valid(owner) {
+			owner = owner[:len(owner)-1]
+		}
+	}
 	var buf bytes.Buffer
 	paddingLength := 0x70 - len(owner)
 	_ = binary.Write(&buf, binary.LittleEndian, owner)
