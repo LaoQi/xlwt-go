@@ -149,7 +149,7 @@ func BoundSheetRecord(streamPos int, visibility int, sheet string) []byte {
 	_ = binary.Write(&buf, binary.LittleEndian, SP_L(streamPos))
 	_ = binary.Write(&buf, binary.LittleEndian, SP_B(visibility))
 	_ = binary.Write(&buf, binary.LittleEndian, SP_B(0))
-	_ = binary.Write(&buf, binary.LittleEndian, ASCIIStringPack(sheet))
+	_ = binary.Write(&buf, binary.LittleEndian, U16StringPack1Byte(sheet))
 	return NewBiffRecord(0x0085, buf.Bytes()).Get()
 }
 

@@ -1,3 +1,9 @@
+# build artifacts and generated spreadsheets
 *.xls
-.idea
-.claude
+*.xlsx
+
+# editors / tooling
+.idea/
+.vscode/
+.claude/
+.tanya/

@@ -1,0 +1,6 @@
+# Normalize line endings: repository stores LF, checkouts keep LF everywhere.
+* text=auto eol=lf
+
+*.xls binary
+*.xlsx binary
+*.png binary

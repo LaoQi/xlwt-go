@@ -2,14 +2,16 @@ package xlwt
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"strings"
 )
 
 type Workbook struct {
 	Owner      string
 	Worksheets []*Worksheet
 	SST        *SharedStringTable
-	Style      *XFStyle
+	Styles     *styleCollection
 }
 
 func NewWorkbook() *Workbook {
@@ -17,17 +19,57 @@ func NewWorkbook() *Workbook {
 		Owner:      "None",
 		Worksheets: []*Worksheet{},
 		SST:        NewSharedStringTable(),
+		Styles:     newStyleCollection(),
 	}
 }
 
-func (wb *Workbook) AddStyle(s *XFStyle) {
-
+// AddStyle registers a style and returns the XF index that cells using it
+// should reference. It is called automatically by Worksheet.Write; call it
+// directly only if you need the index itself. A nil style means the default
+// style. Registering the same style twice returns the same index.
+func (wb *Workbook) AddStyle(style *XFStyle) (int, error) {
+	return wb.Styles.AddStyle(style)
 }
 
-func (wb *Workbook) AddSheet(name string) *Worksheet {
+// AddSheet appends a new worksheet with the given name and returns it.
+//
+// It returns [ErrInvalidSheetName] for an empty name, a name longer than
+// [MaxSheetNameLength] characters, or a name containing \ / ? * [ ] : or a
+// leading apostrophe, and [ErrDuplicateSheetName] when another sheet of this
+// workbook already uses the name (comparison is case-insensitive).
+func (wb *Workbook) AddSheet(name string) (*Worksheet, error) {
+	if err := validateSheetName(name); err != nil {
+		return nil, err
+	}
+	lower := strings.ToLower(name)
+	for _, existing := range wb.Worksheets {
+		if strings.ToLower(existing.Name) == lower {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateSheetName, name)
+		}
+	}
+
 	ws := NewWorksheet(name, wb.SST)
+	ws.workbook = wb
 	wb.Worksheets = append(wb.Worksheets, ws)
-	return ws
+	return ws, nil
+}
+
+// validateSheetName mirrors the worksheet name rules of the file format.
+func validateSheetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: name must not be empty", ErrInvalidSheetName)
+	}
+	runes := []rune(name)
+	if len(runes) > MaxSheetNameLength {
+		return fmt.Errorf("%w: %d characters, allowed maximum is %d", ErrInvalidSheetName, len(runes), MaxSheetNameLength)
+	}
+	if runes[0] == '\'' {
+		return fmt.Errorf("%w: name must not start with an apostrophe", ErrInvalidSheetName)
+	}
+	if strings.ContainsAny(name, "\\/:*?[]") || strings.ContainsRune(name, 0x00) {
+		return fmt.Errorf("%w: name must not contain \\ / ? * [ ] : or a NUL byte", ErrInvalidSheetName)
+	}
+	return nil
 }
 
 func (wb *Workbook) BoundsSheetsRec(start int, sheetsLen []int) []byte {
@@ -37,8 +79,13 @@ func (wb *Workbook) BoundsSheetsRec(start int, sheetsLen []int) []byte {
 	}
 	start = start + prepare.Len()
 	var buf bytes.Buffer
-	for _, sheet := range wb.Worksheets {
+	for i, sheet := range wb.Worksheets {
 		buf.Write(BoundSheetRecord(start, 0, sheet.Name))
+		if i < len(sheetsLen) {
+			// Each worksheet's BOF starts right after the previous one, so the
+			// stream position advances by the previous sheet's BIFF length.
+			start += sheetsLen[i]
+		}
 	}
 	return buf.Bytes()
 }
@@ -68,7 +115,7 @@ func (wb *Workbook) GetBiffData() []byte {
 	before.Write(PrecisionRecord(true))
 	before.Write(RefreshAllRecord())
 	before.Write(BookBoolRecord())
-	before.Write(wb.Style.GetBiffData())
+	before.Write(wb.Styles.GetBiffData())
 	before.Write(PaletteRecord())
 	before.Write(UseSelfsRecord())
 

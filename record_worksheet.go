@@ -233,3 +233,27 @@ func DefaultWindow2Record() []byte {
 
 	return NewBiffRecord(0x023E, buf.Bytes()).Get()
 }
+
+// ColInfoRecord writes a COLINFO record (0x007D) that sets the width, default
+// style and outline options of a range of columns.
+//
+// Layout: first column, last column, width in 1/256 of the width of the zero
+// character of the default font, XF index, option flags, unused word.
+func ColInfoRecord(firstCol, lastCol, width, xfIndex, options, unused int) []byte {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(firstCol))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(lastCol))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(width))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(xfIndex))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(options))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(unused))
+	return NewBiffRecord(0x007D, buf.Bytes()).Get()
+}
+
+// DefColWidthRecord writes a DEFCOLWIDTH record (0x0055), the width used for
+// columns that have no COLINFO record.
+func DefColWidthRecord(defWidth int) []byte {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.LittleEndian, SP_H(defWidth))
+	return NewBiffRecord(0x0055, buf.Bytes()).Get()
+}

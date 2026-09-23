@@ -2,10 +2,9 @@ package xlwt
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 )
-
-const DefaultRowHeightOptions = 0x00FF & 0x07FFF
 
 type Cell struct {
 	Row    int
@@ -19,14 +18,35 @@ type Worksheet struct {
 	SST       *SharedStringTable
 	Grid      map[uint32]Cell
 	RowsIndex map[int]bool
+
+	// Cols and Rows hold the explicit column and row sizing. Only the entries
+	// that were set explicitly are recorded and written to the file.
+	Cols map[int]colInfo
+	Rows map[int]rowInfo
+
+	// ColDefaultWidth and RowDefaultHeight hold the sheet-wide defaults set via
+	// SetColDefaultWidth and SetRowDefaultHeight. Zero means "file format
+	// default" and produces no extra record.
+	ColDefaultWidth  int
+	RowDefaultHeight int
+
+	// workbook is the workbook this sheet was added to; it owns the shared
+	// string table and the style collection.
+	workbook *Workbook
 }
 
+// NewWorksheet creates a worksheet. It is used internally by
+// [Workbook.AddSheet], which also links the sheet to its workbook; a worksheet
+// created directly cannot be written to because it has no style collection to
+// register styles with.
 func NewWorksheet(name string, sst *SharedStringTable) *Worksheet {
 	return &Worksheet{
 		Name:      name,
 		SST:       sst,
 		Grid:      make(map[uint32]Cell),
 		RowsIndex: make(map[int]bool),
+		Cols:      make(map[int]colInfo),
+		Rows:      make(map[int]rowInfo),
 	}
 }
 
@@ -42,14 +62,14 @@ func (ws *Worksheet) calcSettingsRec() []byte {
 	return buf.Bytes()
 }
 
+// GutsRec writes the GUTS record. The outline level counts follow the Python
+// original, which reports one visible row level even when no outlines are used.
 func (ws *Worksheet) GutsRec() []byte {
-	//@todo __update_row_visible_levels
-
-	return GutsRecord(0, 0, 1, 0)
-}
-
-func (ws *Worksheet) defaultRowHeightRec() []byte {
-	return DefaultRowHeightRecord(0x0000, 0x00FF)
+	rowLevels := ws.rowVisibleLevels()
+	if rowLevels == 0 {
+		rowLevels = 1
+	}
+	return GutsRecord(0, 0, rowLevels, ws.colVisibleLevels())
 }
 
 func (ws *Worksheet) wsBoolRec() []byte {
@@ -57,10 +77,6 @@ func (ws *Worksheet) wsBoolRec() []byte {
 	options |= 0x01 << 10 // __show_row_outline
 	options |= 0x01 << 11 // __show_col_outline
 	return WSBoolRecord(options)
-}
-
-func (ws *Worksheet) colInfoRec() []byte {
-	return []byte{}
 }
 
 func (ws *Worksheet) dimensionsRec() []byte {
@@ -115,7 +131,14 @@ func (ws *Worksheet) GetRowCellsBiffData(row int) []byte {
 		}
 	}
 	if len(cells) == 0 {
-		return []byte{}
+		// A row without cells still needs a ROW record when its properties were
+		// set explicitly (height, hidden, outline level).
+		if _, explicit := ws.Rows[row]; !explicit {
+			return []byte{}
+		}
+		var buf bytes.Buffer
+		buf.Write(ws.rowRec(row, 0, 0))
+		return buf.Bytes()
 	}
 	sort.Slice(cells, func(i, j int) bool {
 		return cells[i].Col < cells[j].Col
@@ -123,11 +146,8 @@ func (ws *Worksheet) GetRowCellsBiffData(row int) []byte {
 	firstCol := cells[0].Col
 	lastCol := cells[len(cells)-1].Col + 1
 
-	options := (0x01 & 0x01) << 8
-	options |= (0x0F & 0x0FFF) << 16 // default style
-
 	var buf bytes.Buffer
-	buf.Write(RowRecord(row, firstCol, lastCol, DefaultRowHeightOptions, options))
+	buf.Write(ws.rowRec(row, firstCol, lastCol))
 
 	for _, cell := range cells {
 		buf.Write(LabelSSTRecord(row, cell.Col, cell.XFIdx, cell.SSTIdx))
@@ -139,8 +159,18 @@ func (ws *Worksheet) GetRowCellsBiffData(row int) []byte {
 func (ws *Worksheet) GetRowsBiffData() []byte {
 	var buf bytes.Buffer
 
-	var rows []int
-	for index, _ := range ws.RowsIndex {
+	// Rows are emitted when they contain cells or when their sizing was set
+	// explicitly, which is what the Python original does for row().hidden etc.
+	seen := make(map[int]bool, len(ws.RowsIndex)+len(ws.Rows))
+	for index := range ws.RowsIndex {
+		seen[index] = true
+	}
+	for index := range ws.Rows {
+		seen[index] = true
+	}
+
+	rows := make([]int, 0, len(seen))
+	for index := range seen {
 		rows = append(rows, index)
 	}
 	sort.Ints(rows)
@@ -158,6 +188,7 @@ func (ws *Worksheet) GetBiffData() []byte {
 	buf.Write(ws.defaultRowHeightRec())
 	buf.Write(ws.wsBoolRec())
 	buf.Write(ws.colInfoRec())
+	buf.Write(ws.defColWidthRec())
 	buf.Write(ws.dimensionsRec())
 	buf.Write(ws.printSettingsRec())
 	buf.Write(ws.protectionRec())
@@ -172,10 +203,51 @@ func (ws *Worksheet) GetBiffData() []byte {
 	return buf.Bytes()
 }
 
-func (ws *Worksheet) Write(r, c int, label string) {
-	var key uint32
-	key = uint32((r << 16) + c)
+// Write stores a string cell at the zero-based row r and column c.
+//
+// It returns [ErrRowOutOfRange], [ErrColOutOfRange] or [ErrStringTooLong] when
+// the arguments cannot be represented in a BIFF8 file, in which case the
+// worksheet is left unchanged. Writing the same cell twice keeps the last value.
+//
+// It is shorthand for WriteWithStyle without a style.
+func (ws *Worksheet) Write(r, c int, label string) error {
+	return ws.WriteWithStyle(r, c, label, nil)
+}
+
+// WriteWithStyle stores a string cell with an explicit style. A nil style means
+// the library default style.
+//
+// Styles are deduplicated by value across the whole workbook, so a style can be
+// reused for any number of cells. Passing more distinct styles than a BIFF8 file
+// can reference fails with [ErrTooManyStyles].
+func (ws *Worksheet) WriteWithStyle(r, c int, label string, style *XFStyle) error {
+	if r < 0 || r > MaxRow {
+		return fmt.Errorf("%w: row %d, allowed range is 0..%d", ErrRowOutOfRange, r, MaxRow)
+	}
+	if c < 0 || c > MaxCol {
+		return fmt.Errorf("%w: column %d, allowed range is 0..%d", ErrColOutOfRange, c, MaxCol)
+	}
+	if len([]rune(label)) > MaxStringLength {
+		return fmt.Errorf("%w: %d characters, allowed maximum is %d", ErrStringTooLong, len([]rune(label)), MaxStringLength)
+	}
+
+	// A worksheet created through Workbook.AddSheet registers the style with its
+	// workbook. A worksheet built directly with NewWorksheet has no style
+	// collection, so it can only use the default style.
+	xfIdx := DefaultCellXFStyle
+	if ws.workbook != nil {
+		idx, err := ws.workbook.AddStyle(style)
+		if err != nil {
+			return err
+		}
+		xfIdx = idx
+	} else if style != nil {
+		return fmt.Errorf("%w: worksheet %q was not created by Workbook.AddSheet", ErrUnattachedWorksheet, ws.Name)
+	}
+
+	key := uint32((r << 16) + c)
 	idx := ws.SST.AddStr(label)
-	ws.Grid[key] = Cell{Row: r, Col: c, SSTIdx: idx, XFIdx: DefaultCellXFStyle}
+	ws.Grid[key] = Cell{Row: r, Col: c, SSTIdx: idx, XFIdx: xfIdx}
 	ws.RowsIndex[r] = true
+	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"log"
 	"unicode/utf16"
 )
 
@@ -145,7 +144,7 @@ func (xls *XlsDoc) BuildSat() {
 
 	sect := 0
 	for sect < book_sect_count-1 {
-		xls.book_stream_sect = append(xls.dir_stream_sect, sect)
+		xls.book_stream_sect = append(xls.book_stream_sect, sect)
 		SAT[sect] = sect + 1
 		sect += 1
 	}
@@ -197,6 +196,10 @@ func (xls *XlsDoc) BuildSat() {
 		MSAT_2nd[len(MSAT_2nd)-1] = SID_END_OF_CHAIN
 	}
 
+	// Fill the secondary MSAT sectors. The first 109 SAT sector numbers live in
+	// the header; everything beyond that is stored in MSAT sectors. Every 128th
+	// slot holds the SID of the next MSAT sector instead of a SAT sector number,
+	// so only the else-branch is allowed to advance i (same as upstream xlwt).
 	msat_sect := 0
 	sid_num := 0
 	for i := 109; i < SAT_sect_count; {
@@ -207,6 +210,7 @@ func (xls *XlsDoc) BuildSat() {
 			}
 		} else {
 			MSAT_2nd[sid_num] = xls.SAT_sect[i]
+			i += 1
 		}
 		sid_num += 1
 	}
@@ -266,7 +270,6 @@ func (xls *XlsDoc) Save(writer io.Writer, stream []byte) error {
 	xls.buf.Write(xls.dir_stream)
 
 	data := xls.buf.Bytes()
-	log.Println("save data:", len(data))
 	_, err := writer.Write(data)
 	return err
 }

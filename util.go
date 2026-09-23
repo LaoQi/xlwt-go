@@ -51,3 +51,40 @@ func ASCIIStringPack2(s string) []byte {
 	_ = binary.Write(&buf, binary.LittleEndian, sb)
 	return buf.Bytes()
 }
+
+// U16StringPack1Byte packs a string with a 1-byte character count, as used by
+// record types that cannot hold more than 255 characters (for example the sheet
+// name of a BOUNDSHEET record).
+//
+// Strings that fit into latin-1 use the compressed 8-bit format, everything
+// else is written as UTF-16LE with the high-byte flag set. This mirrors the
+// upack1 helper of the Python original.
+func U16StringPack1Byte(s string) []byte {
+	runes := []rune(s)
+
+	compressed := true
+	for _, r := range runes {
+		if r > 0xFF {
+			compressed = false
+			break
+		}
+	}
+
+	var buf bytes.Buffer
+	if compressed {
+		_ = binary.Write(&buf, binary.LittleEndian, SP_B(len(runes)))
+		_ = binary.Write(&buf, binary.LittleEndian, SP_B(0x00))
+		for _, r := range runes {
+			_ = binary.Write(&buf, binary.LittleEndian, SP_B(byte(r)))
+		}
+		return buf.Bytes()
+	}
+
+	u16s := utf16.Encode(runes)
+	_ = binary.Write(&buf, binary.LittleEndian, SP_B(len(u16s)))
+	_ = binary.Write(&buf, binary.LittleEndian, SP_B(0x01))
+	for _, u := range u16s {
+		_ = binary.Write(&buf, binary.LittleEndian, u)
+	}
+	return buf.Bytes()
+}
